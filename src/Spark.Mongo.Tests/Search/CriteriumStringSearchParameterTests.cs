@@ -1,5 +1,5 @@
 ﻿/* 
- * Copyright (c) 2020, Kufu (info@kufu.no) and contributors
+ * Copyright (c) 2020, Incendi (info@Incendi.no) and contributors
  * See the file CONTRIBUTORS for details.
  * 
  * This file is licensed under the BSD 3-Clause license
@@ -9,6 +9,7 @@
 using Hl7.Fhir.Model;
 using Hl7.Fhir.Utility;
 using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using Spark.Search;
 using Spark.Search.Mongo;
 using System.Linq;
@@ -16,24 +17,47 @@ using Xunit;
 
 namespace Spark.Mongo.Tests.Search
 {
-    public class CriteriumStringSearchParameterTests
+    public partial class CriteriumStringSearchParameterTests
     {
-        [Fact]
-        public void StringQueryTest()
+        [Theory]
+        [InlineData(
+            ResourceType.Subscription, 
+            "criteria", 
+            "criteria=Observation?patient.identifier=http://somehost.no/fhir/Name%20Hospital|someId",
+            "{ \"criteria\" : /^Observation?patient.identifier=http:\\/\\/somehost.no\\/fhir\\/Name%20Hospital|someId/i }")]
+        [InlineData(
+            ResourceType.Patient, 
+            "name",
+            "name:missing=true",
+            "{ \"$or\" : [{ \"name\" : { \"$exists\" : false } }, { \"name\" : null }] }")]
+        [InlineData(
+            ResourceType.Patient, 
+            "name",
+            "name:missing=false",
+            "{ \"name\" : { \"$ne\" : null } }")]
+        [InlineData(ResourceType.Patient, "name", "name=eve", "{ \"name\" : /^eve/i }")]
+        [InlineData(ResourceType.Patient, "name", "name:contains=eve", "{ \"name\" : /.*eve.*/i }")]
+        [InlineData(ResourceType.Patient, "name", "name:exact=Eve", "{ \"name\" : \"Eve\" }")]
+        [InlineData(ResourceType.Condition, "code", "code:text=headache", "{ \"code.text\" : /headache/i }")]
+        [InlineData(ResourceType.Condition, 
+            "code", 
+            "code:not=headache", 
+            "{ \"$or\" : [{ \"code\" : { \"$elemMatch\" : { \"code\" : { \"$exists\" : true, \"$ne\" : \"headache\" } } } }, { \"code\" : { \"$not\" : { \"$type\" : 4 }, \"$exists\" : true }, \"code.code\" : { \"$ne\" : \"headache\" } }, { \"code\" : { \"$type\" : 2, \"$exists\" : true, \"$ne\" : \"headache\" } }] }")]
+        //[InlineData(ResourceType.RiskAssessment, "probability", "probability=1", "")]
+
+        public void Can_Build_Filter_String_Search(ResourceType resourceType, string searchParameter, string query, string expected)
         {
-            var resourceType = ResourceType.Subscription.GetLiteral();
-            var searchParamName = "criteria";
-            
-            var criterium = Criterium.Parse("criteria=Observation?patient.identifier=http://somehost.no/fhir/Name%20Hospital|someId");
-            
-            criterium.SearchParameters.AddRange(ModelInfo.SearchParameters.Where(p => p.Resource == resourceType && p.Name == searchParamName));
+            var bsonSerializerRegistry = new BsonSerializerRegistry();
+            bsonSerializerRegistry.RegisterSerializationProvider(new BsonSerializationProvider());
 
-            var filter = criterium.ToFilter(resourceType);
+            var resourceTypeAsString = resourceType.GetLiteral();
+            var criterium = Criterium.Parse(query);
+            criterium.SearchParameters.AddRange(ModelInfo.SearchParameters.Where(p => p.Resource == resourceTypeAsString && p.Name == searchParameter));
 
-            var jsonFilter = filter?.Render(null, null)?.ToJson();
-            Assert.Equal(
-                "{ \"criteria\" : /^Observation?patient.identifier=http:\\/\\/somehost.no\\/fhir\\/Name%20Hospital|someId/i }",
-                jsonFilter);
+            var filter = criterium.ToFilter(resourceType.GetLiteral());
+
+            var jsonFilter = filter?.Render(null, bsonSerializerRegistry)?.ToJson();
+            Assert.Equal(expected, jsonFilter);
         }
     }
 }
